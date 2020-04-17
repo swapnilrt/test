@@ -1,0 +1,122 @@
+
+from pyspark.sql.functions import col, pandas_udf
+from pyspark.sql.types import LongType
+
+# Declare the function and create the UDF
+def multiply_func(a, b):
+    return a * b
+
+multiply = pandas_udf(multiply_func, returnType=LongType())
+
+# The function for a pandas_udf should be able to execute with local pandas data
+x = pd.Series([1, 2, 3])
+print(multiply_func(x, x))
+# 0    1
+# 1    4
+# 2    9
+# dtype: int64
+
+# Create a Spark DataFrame, 'spark' is an existing SparkSession
+df = spark.createDataFrame(pd.DataFrame(x, columns=["x"]))
+
+# Execute function as a Spark vectorized UDF
+df.select(multiply(col("x"), col("x"))).show()
+# +-------------------+
+# |multiply_func(x, x)|
+# +-------------------+
+# |                  1|
+# |                  4|
+# |                  9|
+# +-------------------+
+Scalar iterator UDFs
+Preview
+
+This feature is in Public Preview.
+Scalar iterator pandas UDF will be available in the next major release of Apache Spark. Databricks backported the feature from the Apache Spark master branch as a technical preview.
+Databricks Runtime 5.5 and above supports scalar iterator pandas UDF, which is the same as the scalar pandas UDF above except that the underlying Python function takes an iterator of batches as input instead of a single batch and, instead of returning a single output batch, it yields output batches or returns an iterator of output batches. A scalar iterator pandas UDF is useful when the UDF execution requires initializing some state, e.g., loading a machine learning model file to apply inference to every input batch.
+
+The following example shows how to create scalar iterator pandas UDFs.
+
+Python
+Copy to clipboardCopy
+import pandas as pd
+
+from pyspark.sql.functions import col, pandas_udf, struct, PandasUDFType
+
+pdf = pd.DataFrame([1, 2, 3], columns=["x"])
+df = spark.createDataFrame(pdf)
+
+# When the UDF is called with a single column that is not StructType,
+# the input to the underlying function is an iterator of pd.Series.
+@pandas_udf("long", PandasUDFType.SCALAR_ITER)
+def plus_one(batch_iter):
+    for x in batch_iter:
+        yield x + 1
+
+df.select(plus_one(col("x"))).show()
+# +-----------+
+# |plus_one(x)|
+# +-----------+
+# |          2|
+# |          3|
+# |          4|
+# +-----------+
+
+# When the UDF is called with more than one columns,
+# the input to the underlying function is an iterator of pd.Series tuple.
+@pandas_udf("long", PandasUDFType.SCALAR_ITER)
+def multiply_two_cols(batch_iter):
+    for a, b in batch_iter:
+        yield a * b
+
+df.select(multiply_two_cols(col("x"), col("x"))).show()
+# +-----------------------+
+# |multiply_two_cols(x, x)|
+# +-----------------------+
+# |                      1|
+# |                      4|
+# |                      9|
+# +-----------------------+
+
+# When the UDF is called with a single column that is StructType,
+# the input to the underlying function is an iterator of pd.DataFrame.
+@pandas_udf("long", PandasUDFType.SCALAR_ITER)
+def multiply_two_nested_cols(pdf_iter):
+    for pdf in pdf_iter:
+        yield pdf["a"] * pdf["b"]
+
+df.select(
+    multiply_two_nested_cols(
+        struct(col("x").alias("a"), col("x").alias("b"))
+    ).alias("y")
+).show()
+# +---+
+# |  y|
+# +---+
+# |  1|
+# |  4|
+# |  9|
+# +---+
+
+# In the UDF, you can initialize some state before processing batches.
+# Wrap your code with try/finally or use context managers to ensure
+# the release of resources at the end.
+y_bc = spark.sparkContext.broadcast(1)
+
+@pandas_udf("long", PandasUDFType.SCALAR_ITER)
+def plus_y(batch_iter):
+    y = y_bc.value  # initialize states
+    try:
+        for x in batch_iter:
+            yield x + y
+    finally:
+        pass  # release resources here, if any
+
+df.select(plus_y(col("x"))).show()
+# +---------+
+# |plus_y(x)|
+# +---------+
+# |        2|
+# |        3|
+# |        4|
+# +---------+
